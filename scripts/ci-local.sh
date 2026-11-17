@@ -4,6 +4,10 @@
 # protection requires. The hosted workflow (.github/workflows/ci.yml) stays
 # available as a manual run.
 #
+# It also keeps one result comment on the branch's open pull request (edited in
+# place on every run): each step with its time, the full commit, whether it is
+# pushed, how far behind main it is, and the tool versions.
+#
 # Usage: scripts/ci-local.sh [--no-report]
 # Needs: a clean tree (the result belongs to the commit, not the working copy),
 # a pushed HEAD and an authenticated `gh` for reporting, Python 3.11+ (tomllib),
@@ -94,25 +98,107 @@ registry_builds() {
   return $status
 }
 
+unit_counts() {
+  awk '/^Ran [0-9]+ tests?/{n=$2} /^OK|^FAILED/{r=$0} END{printf "%s tests, %s", n, r}' "$log"
+}
+shellcheck_count() { printf '%s scripts' "$(find agents -name '*.sh' | wc -l | tr -d ' ')"; }
+
+base_branch=main
+versions="$("$python" --version), $(shellcheck --version | sed -n 's/^version: /shellcheck /p')"
+
 post pending "running locally"
 failed=0
-step() { # name command...
-  local name="$1"
-  shift
-  if "$@"; then
+# ── Result reporting (same in every repository) ───────────────────────────────
+rows=()
+failure_tail=""
+log="$(mktemp)"
+trap 'rm -f "$log"' EXIT
+
+# step NAME SUMMARY_FN CMD...: runs CMD with its output shown and kept, adds a
+# table row with the time and, on success, what SUMMARY_FN prints about the
+# output (for example how many tests ran). A failing step keeps the last lines
+# of its output for the comment.
+step() {
+  local name="$1" summary="$2"
+  shift 2
+  local started=$SECONDS rc=0
+  "$@" 2>&1 | tee "$log"
+  rc=${PIPESTATUS[0]}
+  local took=$((SECONDS - started))
+  if [[ $rc -eq 0 ]]; then
+    rows+=("| $name | passed | $("$summary") | $took s |")
     echo "ci-local: $name passed"
   else
+    rows+=("| $name | **FAILED** | exit $rc | $took s |")
+    failure_tail="$(tail -n 25 "$log" | sed 's/\x1b\[[0-9;]*m//g')"
     echo "ci-local: $name FAILED" >&2
-    failed=1
+  fi
+  return $rc
+}
+none() { :; }
+
+# One comment per pull request, found by its marker and edited in place, so
+# repeated runs do not pile up. Never changes the exit code.
+# Uses: repo, sha, failed, rows, failure_tail, base_branch, versions (text).
+comment() {
+  [[ $report -eq 1 ]] || return 0
+  local branch pr marker body id verdict behind pushed
+  branch="$(git rev-parse --abbrev-ref HEAD)"
+  pr="$(gh pr list --head "$branch" --state open --json number --jq '.[0].number' 2>/dev/null || true)"
+  [[ -n "$pr" ]] || return 0
+  git fetch -q origin "$base_branch" "$branch" 2>/dev/null || true
+  behind="$(git rev-list --count "HEAD..origin/$base_branch" 2>/dev/null || echo '?')"
+  [[ "$(git rev-parse "origin/$branch" 2>/dev/null)" == "$sha" ]] && pushed=yes || pushed=NO
+  verdict=$([[ $failed -eq 0 ]] && echo "all checks passed" || echo "FAILED")
+  marker='<!-- ci-local -->'
+  body="$marker
+**Local checks: $verdict** on commit \`$sha\` ($(date -u +%Y-%m-%dT%H:%MZ))
+
+| Step | Result | Detail | Time |
+| --- | --- | --- | --- |
+$(printf '%s\n' "${rows[@]}")
+
+| What | Value |
+| --- | --- |
+| Commit | \`$sha\` on \`$branch\` |
+| Tree | clean (the script refuses a dirty tree) |
+| Pushed | $pushed (the commit above is the branch head on GitHub) |
+| Behind \`$base_branch\` | $behind commit(s) |
+| Tools | $versions |
+| Host | $(uname -sm) |
+
+Run by \`scripts/ci-local.sh\` on the author's machine; hosted CI is not used. The commit status says the same."
+  if [[ -n "$failure_tail" ]]; then
+    body="$body
+
+<details><summary>Last output of the failing step</summary>
+
+\`\`\`
+$failure_tail
+\`\`\`
+
+</details>"
+  fi
+  id="$(gh api "repos/$repo/issues/$pr/comments" --paginate \
+    --jq "[.[] | select(.body | startswith(\"$marker\"))][0].id // empty" 2>/dev/null || true)"
+  if [[ -n "$id" ]]; then
+    gh api -X PATCH "repos/$repo/issues/comments/$id" -f body="$body" >/dev/null 2>&1 ||
+      echo "ci-local: could not update the PR comment" >&2
+  else
+    gh api "repos/$repo/issues/$pr/comments" -f body="$body" >/dev/null 2>&1 ||
+      echo "ci-local: could not post the PR comment" >&2
   fi
 }
 
-step "engine build" build_engine
+step "engine build" none build_engine || failed=1
+# step runs in a pipeline, so the export inside build_engine did not survive.
+[[ -n "${OPS_ENGINE:-}" ]] ||
+  export OPS_ENGINE="${XDG_CACHE_HOME:-$HOME/.cache}/agents-ci-local/operations-engine/target/release/ops-engine"
 if [[ $failed -eq 0 ]]; then
-  step "agent metadata and scripts" "$python" scripts/check_agents.py
-  step "unit tests" "$python" -m unittest discover tests
-  step "ShellCheck" shellcheck_agents
-  step "registry builds" registry_builds
+  step "agent metadata and scripts" none "$python" scripts/check_agents.py || failed=1
+  step "unit tests" unit_counts "$python" -m unittest discover tests || failed=1
+  step "ShellCheck" shellcheck_count shellcheck_agents || failed=1
+  step "registry builds" none registry_builds || failed=1
 fi
 
 if [[ $failed -eq 0 ]]; then
@@ -122,4 +208,5 @@ else
   post failure "failed locally"
   echo "ci-local: check FAILED" >&2
 fi
+comment
 exit $failed
