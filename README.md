@@ -11,8 +11,8 @@ Status: **phase 4.** The seven built-in agents (`metrics-agent`,
 byte what the engine installs today. The engine still carries its own copies
 and installs them offline; it switches to this repository after the first
 release that contains them. Design:
-[agent-registry brief](https://github.com/local-control-panel/docs) (private
-docs repository, `operations-engine/design/agent-registry.md`).
+[agent-registry brief](https://github.com/orbden/website-control-panel) (private
+application repository, `documentation/operations-engine/design/agent-registry.md`).
 
 ## How trust works
 
