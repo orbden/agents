@@ -12,7 +12,7 @@ byte what the engine installs today. The engine still carries its own copies
 and installs them offline; it switches to this repository after the first
 release that contains them. Design:
 [agent-registry brief](https://github.com/orbden/website-control-panel) (private
-application repository, `documentation/operations-engine/design/agent-registry.md`).
+application repository, `docs/operations-engine/design/agent-registry.md`).
 
 ## How trust works
 
