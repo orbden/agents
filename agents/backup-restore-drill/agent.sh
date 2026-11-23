@@ -15,7 +15,26 @@ from pathlib import Path
 
 WCP_DIR = Path(os.environ.get("WCP_DIR", "/root/.wcp"))
 sys.path.insert(0, str(WCP_DIR / "agents"))
-from wcp_agent_lib import log_entry, notify, run, shell_quote, database_dump_command, sql_digest, compose_service_container
+from wcp_agent_lib import log_entry, notify, run, run_argv, shell_quote, database_dump_command, sql_digest
+
+
+
+def compose_service_container(service):
+    """Id of the running container of `service` in the managed Compose project,
+    or "" when there is none. Raises when Docker cannot be asked: an unreadable
+    answer is not "no container"."""
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", service):
+        raise ValueError("Invalid Compose service name")
+    result = run_argv([
+        "docker", "ps", "-q",
+        "--filter", "label=com.docker.compose.project=wcp",
+        "--filter", f"label=com.docker.compose.service={service}",
+    ])
+    if result.returncode != 0:
+        raise RuntimeError("Could not list the Compose containers")
+    ids = result.stdout.split()
+    return ids[0] if ids else ""
+
 
 backup_dir = WCP_DIR / "backups"
 backup_dir.mkdir(parents=True, exist_ok=True)
@@ -155,6 +174,6 @@ except Exception as e:
 result["duration_s"] = int(time.time() - start)
 log_entry(str(WCP_DIR / "logs/restore-drill.log"), result)
 notify(str(WCP_DIR / "notify.conf"), is_failure=result["status"] != "ok", is_success=result["status"] == "ok",
-       summary_text=f"Restore drill: {result['status']}", event_payload=result, username="WCP Restore Drill")
+       summary_text=f"Restore drill: {result['status']}", event_payload=result, username="OrbDen Restore Drill")
 sys.exit(0 if result["status"] == "ok" else 1)
 PYEOF
