@@ -10,7 +10,6 @@ already installed.
 
 import json
 import os
-import re
 import subprocess
 
 
@@ -65,62 +64,11 @@ def log_entry(log_file, entry, max_lines=2000):
         pass
 
 
-# The Compose project the panel manages; its services carry these labels.
-COMPOSE_PROJECT = "wcp"
+def _sh_esc(s):
+    return "'" + str(s).replace("'", "'\\''") + "'"
 
 
-def compose_service_container(service, running=True):
-    """Id of the container of `service` in the managed Compose project, or ""
-    when there is none. With `running=False` a stopped container counts too,
-    so "not running" and "never created" can be told apart. Raises when Docker
-    cannot be asked: an unreadable answer is not "no container".
-    """
-    if not isinstance(service, str) or not re.fullmatch(r"[a-z0-9][a-z0-9-]{0,62}", service):
-        raise ValueError("Invalid Compose service name")
-    argv = ["docker", "ps", "-q"] + ([] if running else ["-a"]) + [
-        "--filter", f"label=com.docker.compose.project={COMPOSE_PROJECT}",
-        "--filter", f"label=com.docker.compose.service={service}",
-    ]
-    result = run_argv(argv)
-    if result.returncode != 0:
-        raise RuntimeError("Could not list the Compose containers")
-    ids = result.stdout.split()
-    return ids[0] if ids else ""
-
-
-# Older installed agents and tests still reach for the private name.
-_sh_esc = shell_quote
-
-
-def make_logger(path, max_lines=2000):
-    """Return `log(entry)` that appends to `path` through `log_entry`.
-
-    Same file, line format and rotation as calling `log_entry(path, entry,
-    max_lines)` directly; it only binds the path and the limit once.
-    """
-    def log(entry):
-        log_entry(path, entry, max_lines)
-    return log
-
-
-def run_cmd(cmd, timeout=60, pipefail=False):
-    """Run `cmd` and return the completed process.
-
-    A string runs through the shell like `run`; a list runs without one like
-    `run_argv`. `pipefail` runs a string under `bash -o pipefail -c` so a
-    failing stage of a pipeline fails the whole command; it is for strings
-    only.
-    """
-    if isinstance(cmd, (list, tuple)):
-        if pipefail:
-            raise ValueError("pipefail needs a shell string, not an argument list")
-        return run_argv(list(cmd), timeout=timeout)
-    if pipefail:
-        cmd = "bash -o pipefail -c " + shell_quote(cmd)
-    return run(cmd, timeout=timeout)
-
-
-def notify(notify_file, is_failure, is_success, summary_text, event_payload, username="WCP Agent"):
+def notify(notify_file, is_failure, is_success, summary_text, event_payload, username="OrbDen Agent"):
     """Send `summary_text`/`event_payload` to every enabled channel in
     `notify_file` whose on_failure/on_success gate matches. `is_failure` and
     `is_success` are independent (not assumed complementary) so callers whose
@@ -154,7 +102,7 @@ def notify(notify_file, is_failure, is_success, summary_text, event_payload, use
 
         subprocess.run(
             f"curl -s -m 10 -X POST -H 'Content-Type: application/json' "
-            f"-d {shell_quote(body)} {shell_quote(webhook_url)}",
+            f"-d {_sh_esc(body)} {_sh_esc(webhook_url)}",
             shell=True,
             capture_output=True,
             text=True,
